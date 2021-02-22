@@ -766,7 +766,7 @@ export let Serializer = {
 */
 export class Socket {
   constructor(endPoint, opts = {}){
-    this.stateChangeCallbacks = {open: [], close: [], error: [], message: []}
+    this.stateChangeCallbacks = {open: [], close: [], error: [], message: [], latency: []}
     this.channels             = []
     this.sendBuffer           = []
     this.ref                  = 0
@@ -815,6 +815,7 @@ export class Socket {
     this.vsn                  = opts.vsn || DEFAULT_VSN
     this.heartbeatTimer       = null
     this.pendingHeartbeatRef  = null
+    this.pendingHeartbeatStart= null
     this.reconnectTimer       = new Timer(() => {
       this.teardown(() => this.connect())
     }, this.reconnectAfterMs)
@@ -938,6 +939,20 @@ export class Socket {
     return ref
   }
 
+  // AVN: latency analytics
+  /**
+   * Registers callbacks for latency measurement
+   *
+   * @example socket.onLatencyMeasurement(function(latencyMs){ console.info("the latency was " + latencyMs) })
+   *
+   * @param {Function} callback
+   */
+  onLatencyMeasurement(callback){    
+    let ref = this.makeRef()
+    this.stateChangeCallbacks.latency.push([ref, callback])
+    return ref
+  }
+
   /**
    * @private
    */
@@ -957,6 +972,7 @@ export class Socket {
 
   resetHeartbeat(){ if(this.conn && this.conn.skipHeartbeat){ return }
     this.pendingHeartbeatRef = null
+    this.pendingHeartbeatStart = null
     clearInterval(this.heartbeatTimer)
     this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), this.heartbeatIntervalMs)
   }
@@ -1124,6 +1140,7 @@ export class Socket {
       return
     }
     this.pendingHeartbeatRef = this.makeRef()
+    this.pendingHeartbeatStart = new Date().getTime()
     this.push({topic: "phoenix", event: "heartbeat", payload: {}, ref: this.pendingHeartbeatRef})
   }
 
@@ -1142,7 +1159,12 @@ export class Socket {
   onConnMessage(rawMessage){
     this.decode(rawMessage.data, msg => {
       let {topic, event, payload, ref, join_ref} = msg
-      if(ref && ref === this.pendingHeartbeatRef){ this.pendingHeartbeatRef = null }
+      if(ref && ref === this.pendingHeartbeatRef) { 
+        this.pendingHeartbeatRef = null 
+        const latencyMs = new Date().getTime() - this.pendingHeartbeatStart;
+        this.pendingHeartbeatStart = null
+        this.stateChangeCallbacks.latency.forEach( ([, callback]) => callback(latencyMs) )
+      }
 
       if (this.hasLogger()) this.log("receive", `${payload.status || ""} ${topic} ${event} ${ref && "(" + ref + ")" || ""}`, payload)
 
